@@ -61,6 +61,7 @@ doc/doxygen/__pycache__
 workspace.code-workspace
 Logs/
 UserSettings/
+.utmp/
 conansync/conan/android.profile
 conansync/conan/linux.profile
 conansync/conan/macos.profile
