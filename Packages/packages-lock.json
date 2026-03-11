@@ -276,6 +276,15 @@
       },
       "url": "https://packages.unity.com"
     },
+    "com.xreal.xr": {
+      "version": "file:/Users/snsnap1159/Downloads/com.xreal.xr.tar.gz",
+      "depth": 0,
+      "source": "local-tarball",
+      "dependencies": {
+        "com.unity.xr.management": "4.4.1",
+        "com.unity.xr.core-utils": "2.2.0"
+      }
+    },
     "com.unity.modules.accessibility": {
       "version": "1.0.0",
       "depth": 0,
