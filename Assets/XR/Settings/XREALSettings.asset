@@ -17,7 +17,10 @@ MonoBehaviour:
   InitialInputSource: 1
   VirtualController: {fileID: 0}
   SupportMultiResume: 1
-  AddtionalPermissions: []
+  AddtionalPermissions:
+  - CAMERA
+  - VIBRATION
+  - RECORD_AUDIO
   EnableAutoLogcat: 0
   EnableNativeSessionManager: 0
   SupportDevices: 0100000002000000
