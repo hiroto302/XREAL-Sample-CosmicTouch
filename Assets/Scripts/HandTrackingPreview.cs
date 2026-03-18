@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.Globalization;
 
 using UnityEngine;
@@ -82,22 +81,25 @@ public class HandTrackingPreview : MonoBehaviour
     private RenderTexture         _rgbRt;
     private int                   _frameCount;
 
-    private readonly List<GameObject> _uiObjects = new List<GameObject>();
+    // --- 最適化2: 永続化テクスチャバッファー ---
+    private RenderTexture _rt192;
+    private Texture2D     _tex192;
+
+    // --- 最適化3: 事前割り当てUIオブジェクト ---
+    private RectTransform[] _dotObjects;
+    private RectTransform[] _boneObjects;
 
     // -----------------------------------------------------------------------
 
     void Start()
     {
+        _cam = XREALRGBCameraTexture.CreateSingleton();
+        if (!_cam.IsCapturing) _cam.StartCapture();
+
         var detModel = ModelLoader.Load(detectorModelAsset);
         var lmModel  = ModelLoader.Load(landmarkerModelAsset);
 
-        // ★ デバッグ: 出力テンソル名確認
-        for (int i = 0; i < detModel.outputs.Count; i++)
-            Debug.Log($"[HandLive2D] detector output[{i}] name={detModel.outputs[i].name}");
-        for (int i = 0; i < lmModel.outputs.Count; i++)
-            Debug.Log($"[HandLive2D] landmarker output[{i}] name={lmModel.outputs[i].name}");
-
-        // ai.inference 2.4.0 では出力順が変わったため shape で判定
+        // ai.inference 2.4.0では出力順が変わったためshapeで判定
         // scores: (1, 2016, 1), boxes: (1, 2016, 18)
         _detScoreOutput   = detModel.outputs[1].name;
         _detBoxOutput     = detModel.outputs[0].name;
@@ -107,8 +109,12 @@ public class HandTrackingPreview : MonoBehaviour
         _landmarkerWorker = new Worker(lmModel, BackendType.GPUCompute);
         _anchors          = LoadAnchors(anchorsCSV.text, NumAnchors);
 
-        _cam = XREALRGBCameraTexture.CreateSingleton();
-        if (!_cam.IsCapturing) _cam.StartCapture();
+        // 最適化2: 永続化テクスチャバッファーを一度だけ作成
+        _rt192  = new RenderTexture(DetectorSize, DetectorSize, 0, RenderTextureFormat.ARGB32);
+        _tex192 = new Texture2D(DetectorSize, DetectorSize, TextureFormat.RGB24, false);
+
+        // 最適化3: UIオブジェクトを事前割り当て
+        PreallocateUI();
 
         if (statusText != null) statusText.text = "Camera starting...";
     }
@@ -117,8 +123,9 @@ public class HandTrackingPreview : MonoBehaviour
     {
         _detectorWorker?.Dispose();
         _landmarkerWorker?.Dispose();
-        if (_rgbRt != null) { _rgbRt.Release(); Destroy(_rgbRt); }
-        ClearUI();
+        if (_rgbRt  != null) { _rgbRt.Release();  Destroy(_rgbRt); }
+        if (_rt192  != null) { _rt192.Release();   Destroy(_rt192); }
+        if (_tex192 != null) Destroy(_tex192);
     }
 
     // -----------------------------------------------------------------------
@@ -157,18 +164,14 @@ public class HandTrackingPreview : MonoBehaviour
 
     void Detect(RenderTexture rt)
     {
-        // 192×192 に縮小して Texture2D に読み込み
-        var rt192 = RenderTexture.GetTemporary(DetectorSize, DetectorSize, 0);
-        Graphics.Blit(rt, rt192);
-        RenderTexture.active = rt192;
-        var tex192 = new Texture2D(DetectorSize, DetectorSize, TextureFormat.RGB24, false);
-        tex192.ReadPixels(new Rect(0, 0, DetectorSize, DetectorSize), 0, 0);
-        tex192.Apply();
+        // 最適化2: 永続化_rt192/_tex192を再利用（new Texture2Dなし）
+        Graphics.Blit(rt, _rt192);
+        RenderTexture.active = _rt192;
+        _tex192.ReadPixels(new Rect(0, 0, DetectorSize, DetectorSize), 0, 0);
+        _tex192.Apply();
         RenderTexture.active = null;
-        RenderTexture.ReleaseTemporary(rt192);
 
-        try { RunDetectionAndLandmark(tex192); }
-        finally { Destroy(tex192); }
+        RunDetectionAndLandmark(_tex192);
     }
 
     void RunDetectionAndLandmark(Texture2D tex192)
@@ -195,7 +198,7 @@ public class HandTrackingPreview : MonoBehaviour
             if (s > bestScore) { bestScore = s; bestIdx = i; }
         }
 
-        ClearUI();
+        HideAllUI();
 
         if (bestScore < scoreThreshold || bestIdx < 0)
         {
@@ -256,18 +259,12 @@ public class HandTrackingPreview : MonoBehaviour
             );
         }
 
-        DrawSkeleton(points2D);
-        DrawKeypoints(points2D);
+        // 最適化3: SetActiveのみ（Destroy/Createなし）
+        UpdateSkeleton(points2D);
+        UpdateKeypoints(points2D);
 
         if (statusText != null)
-        {
-            statusText.text = $"score={bestScore:F2} idx={bestIdx}\n"
-                + $"sShape={rawScoresGpu.shape} bShape={rawBoxesGpu.shape}\n"
-                + $"s[0..3]={scoresData[0]:F2},{scoresData[1]:F2},{scoresData[2]:F2},{scoresData[3]:F2}\n"
-                + $"b[0..3]={boxesData[0]:F2},{boxesData[1]:F2},{boxesData[2]:F2},{boxesData[3]:F2}\n"
-                + $"box=({boxCx:F1},{boxCy:F1}) size={boxSize:F1}\n"
-                + $"pt0=({points2D[0].x:F3},{points2D[0].y:F3})";
-        }
+            statusText.text = $"Hand: detected  score={bestScore:F2}";
     }
 
     // -----------------------------------------------------------------------
@@ -338,66 +335,83 @@ public class HandTrackingPreview : MonoBehaviour
     }
 
     // -----------------------------------------------------------------------
-    // Canvas 2D 描画
+    // 最適化3: UI事前割り当て
     // -----------------------------------------------------------------------
 
-    void ClearUI()
+    void PreallocateUI()
     {
-        foreach (var go in _uiObjects) Destroy(go);
-        _uiObjects.Clear();
-    }
-
-    /// <summary>キーポイントをドットで描画（正規化座標 0〜1）。</summary>
-    void DrawKeypoints(Vector2[] points)
-    {
-        foreach (var p in points)
+        _dotObjects = new RectTransform[NumKeypoints];
+        for (int i = 0; i < NumKeypoints; i++)
         {
-            var go   = new GameObject("Keypoint");
+            var go   = new GameObject("Dot");
             go.transform.SetParent(overlayContainer, false);
             var rect = go.AddComponent<RectTransform>();
             var img  = go.AddComponent<Image>();
-            img.color = keypointColor;
-
-            rect.anchorMin        = p;
-            rect.anchorMax        = p;
-            rect.pivot            = new Vector2(0.5f, 0.5f);
-            rect.sizeDelta        = new Vector2(dotSize, dotSize);
-            rect.anchoredPosition = Vector2.zero;
-
-            _uiObjects.Add(go);
+            img.color      = keypointColor;
+            rect.pivot     = new Vector2(0.5f, 0.5f);
+            rect.sizeDelta = new Vector2(dotSize, dotSize);
+            go.SetActive(false);
+            _dotObjects[i] = rect;
         }
-    }
 
-    /// <summary>スケルトン接続を細い矩形（回転済み）で描画。</summary>
-    void DrawSkeleton(Vector2[] points)
-    {
-        Vector2 containerSize = overlayContainer.rect.size;
-
-        foreach (var conn in SkeletonConnections)
+        _boneObjects = new RectTransform[SkeletonConnections.Length];
+        for (int i = 0; i < SkeletonConnections.Length; i++)
         {
-            Vector2 a = points[conn[0]];
-            Vector2 b = points[conn[1]];
-
-            Vector2 aPx  = new Vector2(a.x * containerSize.x, a.y * containerSize.y);
-            Vector2 bPx  = new Vector2(b.x * containerSize.x, b.y * containerSize.y);
-            Vector2 mid  = (aPx + bPx) * 0.5f;
-            float   dist  = Vector2.Distance(aPx, bPx);
-            float   angle = Mathf.Atan2(bPx.y - aPx.y, bPx.x - aPx.x) * Mathf.Rad2Deg;
-
             var go   = new GameObject("Bone");
             go.transform.SetParent(overlayContainer, false);
             var rect = go.AddComponent<RectTransform>();
             var img  = go.AddComponent<Image>();
-            img.color = lineColor;
+            img.color      = lineColor;
+            rect.pivot     = new Vector2(0.5f, 0.5f);
+            rect.sizeDelta = new Vector2(0f, lineThickness);
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.zero;
+            go.SetActive(false);
+            _boneObjects[i] = rect;
+        }
+    }
 
-            rect.anchorMin        = Vector2.zero;
-            rect.anchorMax        = Vector2.zero;
-            rect.pivot            = new Vector2(0.5f, 0.5f);
+    // -----------------------------------------------------------------------
+    // 最適化3: Canvas 2D描画（SetActiveのみ、Destroy/Createなし）
+    // -----------------------------------------------------------------------
+
+    void HideAllUI()
+    {
+        foreach (var r in _dotObjects)  r.gameObject.SetActive(false);
+        foreach (var r in _boneObjects) r.gameObject.SetActive(false);
+    }
+
+    void UpdateKeypoints(Vector2[] points)
+    {
+        for (int i = 0; i < NumKeypoints; i++)
+        {
+            var rect              = _dotObjects[i];
+            rect.anchorMin        = points[i];
+            rect.anchorMax        = points[i];
+            rect.anchoredPosition = Vector2.zero;
+            rect.gameObject.SetActive(true);
+        }
+    }
+
+    void UpdateSkeleton(Vector2[] points)
+    {
+        Vector2 containerSize = overlayContainer.rect.size;
+
+        for (int i = 0; i < SkeletonConnections.Length; i++)
+        {
+            Vector2 a = points[SkeletonConnections[i][0]];
+            Vector2 b = points[SkeletonConnections[i][1]];
+
+            Vector2 aPx   = new Vector2(a.x * containerSize.x, a.y * containerSize.y);
+            Vector2 bPx   = new Vector2(b.x * containerSize.x, b.y * containerSize.y);
+            float   dist  = Vector2.Distance(aPx, bPx);
+            float   angle = Mathf.Atan2(bPx.y - aPx.y, bPx.x - aPx.x) * Mathf.Rad2Deg;
+
+            var rect              = _boneObjects[i];
             rect.sizeDelta        = new Vector2(dist, lineThickness);
-            rect.anchoredPosition = mid;
+            rect.anchoredPosition = (aPx + bPx) * 0.5f;
             rect.localRotation    = Quaternion.Euler(0f, 0f, angle);
-
-            _uiObjects.Add(go);
+            rect.gameObject.SetActive(true);
         }
     }
 
