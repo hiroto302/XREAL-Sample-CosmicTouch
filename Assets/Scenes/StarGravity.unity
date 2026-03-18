@@ -471,7 +471,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   planet: {fileID: 561827842907603365, guid: e0c913ba9604343f589666faeac18a2b, type: 3}
-  gravityStrength: -0.2
+  gravityStrength: 0.1
   gravityLerpSpeed: 0.98
   damping: 0.9981
 --- !u!1660057539 &9223372036854775807

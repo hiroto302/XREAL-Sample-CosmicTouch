@@ -547,7 +547,10 @@ PlayerSettings:
   - serializedVersion: 2
     m_BuildTarget: Android
     m_EncodingQuality: 1
-  m_BuildTargetGroupHDRCubemapEncodingQuality: []
+  m_BuildTargetGroupHDRCubemapEncodingQuality:
+  - serializedVersion: 2
+    m_BuildTarget: Android
+    m_EncodingQuality: 1
   m_BuildTargetGroupLightmapSettings: []
   m_BuildTargetGroupLoadStoreDebugModeSettings: []
   m_BuildTargetNormalMapEncoding:
@@ -822,7 +825,8 @@ PlayerSettings:
   webGLWebAssemblyBigInt: 0
   webGLCloseOnQuit: 0
   webWasm2023: 0
-  scriptingDefineSymbols: {}
+  scriptingDefineSymbols:
+    Android: APP_UI_EDITOR_ONLY
   additionalCompilerArguments: {}
   platformArchitecture: {}
   scriptingBackend:
@@ -830,7 +834,8 @@ PlayerSettings:
   il2cppCompilerConfiguration: {}
   il2cppCodeGeneration: {}
   il2cppStacktraceInformation: {}
-  managedStrippingLevel: {}
+  managedStrippingLevel:
+    Android: 1
   incrementalIl2cppBuild: {}
   suppressCommonWarnings: 1
   allowUnsafeCode: 0
