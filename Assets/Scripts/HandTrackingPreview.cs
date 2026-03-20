@@ -22,7 +22,7 @@ using Unity.InferenceEngine;
 ///   Canvas
 ///     ├─ RawImage-Preview      → previewImage
 ///     │    └─ OverlayContainer → overlayContainer
-///     └─ Text-Status           → statusText
+///     └─ StatusText          → statusText
 /// </summary>
 public class HandTrackingPreview : MonoBehaviour
 {
@@ -35,25 +35,25 @@ public class HandTrackingPreview : MonoBehaviour
     [SerializeField] private Material yuvMaterial;
 
     [Header("UI")]
-    [SerializeField] private RawImage      previewImage;
+    [SerializeField] private RawImage previewImage;
     [SerializeField] private RectTransform overlayContainer;
-    [SerializeField] private Text          statusText;
+    [SerializeField] private Text statusText;
 
     [Header("Detection Settings")]
-    [SerializeField] private float scoreThreshold       = 0.5f;
-    [SerializeField] private int   detectIntervalFrames = 5;
+    [SerializeField] private float scoreThreshold = 0.5f;
+    [SerializeField] private int detectIntervalFrames = 5;
 
     [Header("Visualization")]
     [SerializeField] private Color keypointColor = new Color(0.2f, 0.6f, 1f, 1f);
-    [SerializeField] private Color lineColor     = new Color(1f, 1f, 1f, 0.9f);
-    [SerializeField] private float dotSize       = 12f;
+    [SerializeField] private Color lineColor = new Color(1f, 1f, 1f, 0.9f);
+    [SerializeField] private float dotSize = 12f;
     [SerializeField] private float lineThickness = 4f;
 
-    // --- 定数 ---
+    // 定数
     private const int DetectorSize = 192;
     private const int LandmarkSize = 224;
-    private const int NumAnchors   = 2016;
-    private const int BoxStride    = 18;
+    private const int NumAnchors = 2016;
+    private const int BoxStride = 18;
     private const int NumKeypoints = 21;
 
     // BlazeHand スケルトン接続
@@ -69,27 +69,26 @@ public class HandTrackingPreview : MonoBehaviour
         new int[]{5,9},  new int[]{9,13}, new int[]{13,17}
     };
 
-    // --- 内部状態 ---
-    private Worker                _detectorWorker;
-    private Worker                _landmarkerWorker;
-    private float[,]              _anchors;
-    private string                _detScoreOutput;
-    private string                _detBoxOutput;
-    private string                _lmOutput;
+    // 内部変数
+    private Worker _detectorWorker;
+    private Worker _landmarkerWorker;
+    private float[,] _anchors;
+    private string _detScoreOutput;
+    private string _detBoxOutput;
+    private string _lmOutput;
 
     private XREALRGBCameraTexture _cam;
-    private RenderTexture         _rgbRt;
-    private int                   _frameCount;
+    private RenderTexture _rgbRt;
+    private int _frameCount;
 
-    // --- 最適化2: 永続化テクスチャバッファー ---
+    // 最適化: テクスチャバッファーの永続化
     private RenderTexture _rt192;
-    private Texture2D     _tex192;
+    private Texture2D _tex192;
 
-    // --- 最適化3: 事前割り当てUIオブジェクト ---
+    // 最適化: 事前割り当てUIオブジェクト
     private RectTransform[] _dotObjects;
     private RectTransform[] _boneObjects;
 
-    // -----------------------------------------------------------------------
 
     void Start()
     {
@@ -109,11 +108,11 @@ public class HandTrackingPreview : MonoBehaviour
         _landmarkerWorker = new Worker(lmModel, BackendType.GPUCompute);
         _anchors          = LoadAnchors(anchorsCSV.text, NumAnchors);
 
-        // 最適化2: 永続化テクスチャバッファーを一度だけ作成
+        // 最適化: 永続化テクスチャバッファーを一度だけ作成
         _rt192  = new RenderTexture(DetectorSize, DetectorSize, 0, RenderTextureFormat.ARGB32);
         _tex192 = new Texture2D(DetectorSize, DetectorSize, TextureFormat.RGB24, false);
 
-        // 最適化3: UIオブジェクトを事前割り当て
+        // 最適化: UIオブジェクトを事前割り当て
         PreallocateUI();
 
         if (statusText != null) statusText.text = "Camera starting...";
@@ -128,12 +127,9 @@ public class HandTrackingPreview : MonoBehaviour
         if (_tex192 != null) Destroy(_tex192);
     }
 
-    // -----------------------------------------------------------------------
-    // メインループ
-    // -----------------------------------------------------------------------
-
     void Update()
     {
+        // カメラ出力のYUV分離テクスチャを取得
         var yuv = _cam.GetYUVFormatTextures();
         if (yuv[0] == null)
         {
@@ -141,11 +137,13 @@ public class HandTrackingPreview : MonoBehaviour
             return;
         }
 
+        // プレビュー映像表示（YUV → RGB変換はマテリアルで行う）
         previewImage.texture  = yuv[0];
         yuvMaterial.SetTexture("_UTex", yuv[1]);
         yuvMaterial.SetTexture("_VTex", yuv[2]);
         previewImage.material = yuvMaterial;
 
+        // フレームスキップして処理負荷を軽減
         if (++_frameCount % detectIntervalFrames != 0) return;
 
         if (_rgbRt == null || _rgbRt.width != yuv[0].width || _rgbRt.height != yuv[0].height)
@@ -153,18 +151,20 @@ public class HandTrackingPreview : MonoBehaviour
             _rgbRt?.Release();
             _rgbRt = new RenderTexture(yuv[0].width, yuv[0].height, 0);
         }
+
+        // 最適化: GPUでYUV → RGB変換してからCPUに転送
         Graphics.Blit(yuv[0], _rgbRt, yuvMaterial);
 
+        // 手の検出とランドマーク推定を実行
         Detect(_rgbRt);
     }
 
-    // -----------------------------------------------------------------------
-    // 検出フロー
-    // -----------------------------------------------------------------------
-
+    /// <summary>
+    /// BlazeHandの検出とランドマーク推定を実行し、UIを更新する。
+    /// </summary>
+    /// <param name="rt">入力となるRenderTexture</param>
     void Detect(RenderTexture rt)
     {
-        // 最適化2: 永続化_rt192/_tex192を再利用（new Texture2Dなし）
         Graphics.Blit(rt, _rt192);
         RenderTexture.active = _rt192;
         _tex192.ReadPixels(new Rect(0, 0, DetectorSize, DetectorSize), 0, 0);
@@ -251,7 +251,7 @@ public class HandTrackingPreview : MonoBehaviour
             float ly = lmData[i * 3 + 1];
 
             Vector2 detPt = CropToDetectorSpace(new Vector2(lx, ly),
-                                                 new Vector2(boxCx, boxCy), boxSize, rotation);
+                                                    new Vector2(boxCx, boxCy), boxSize, rotation);
             // Y反転: モデルはY=上が0、CanvasはY=下が0
             points2D[i] = new Vector2(
                 detPt.x / DetectorSize,
@@ -267,11 +267,11 @@ public class HandTrackingPreview : MonoBehaviour
             statusText.text = $"Hand: detected  score={bestScore:F2}";
     }
 
-    // -----------------------------------------------------------------------
-    // 前処理ユーティリティ
-    // -----------------------------------------------------------------------
 
     /// <summary>Texture2D → NHWC TensorFloat。GetPixels32()はY=0が下なので反転。</summary>
+    /// <param name="tex">入力となるTexture2D</param>
+    /// <param name="size">出力テンソルのサイズ</param>
+    /// <returns>NHWC形式のTensorFloat</returns>
     static Tensor<float> TextureToNHWC(Texture2D tex, int size)
     {
         Color32[] pixels = tex.GetPixels32();
@@ -334,10 +334,9 @@ public class HandTrackingPreview : MonoBehaviour
         return new Vector2(scale * rx + centre.x, -scale * ry + centre.y);
     }
 
-    // -----------------------------------------------------------------------
-    // 最適化3: UI事前割り当て
-    // -----------------------------------------------------------------------
-
+    /// <summary>
+    /// 事前にUIオブジェクトを割り当てておき、SetActiveのみで表示/非表示を切り替える。
+    /// </summary>
     void PreallocateUI()
     {
         _dotObjects = new RectTransform[NumKeypoints];
@@ -370,10 +369,6 @@ public class HandTrackingPreview : MonoBehaviour
             _boneObjects[i] = rect;
         }
     }
-
-    // -----------------------------------------------------------------------
-    // 最適化3: Canvas 2D描画（SetActiveのみ、Destroy/Createなし）
-    // -----------------------------------------------------------------------
 
     void HideAllUI()
     {
@@ -415,10 +410,12 @@ public class HandTrackingPreview : MonoBehaviour
         }
     }
 
-    // -----------------------------------------------------------------------
-    // アンカー読み込み (CSV: cx,cy,w,h 正規化値, 2016行)
-    // -----------------------------------------------------------------------
-
+    /// <summary>
+    /// CSV形式のアンカーデータを読み込み、float[,] 配列に格納する。
+    /// </summary>
+    /// <param name="csv">CSV形式のアンカーデータ</param>
+    /// <param name="count">読み込む行数</param>
+    /// <returns>float[,] 配列に格納されたアンカーデータ</returns>
     static float[,] LoadAnchors(string csv, int count)
     {
         float[,] result = new float[count, 4];
