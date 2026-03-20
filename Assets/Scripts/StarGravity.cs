@@ -7,13 +7,18 @@ public class StarGravity : MonoBehaviour
 
     public GameObject planet;
     GameObject[] planets = new GameObject[N];
-    const int N = 3000;
+    const int N = 2000;
 
     const float t = 0.01f; // TimeStep
 
     [SerializeField, Range(-20f, 20f)] float gravityStrength = -9f;
     [SerializeField, Range(0.1f, 10f)] float gravityLerpSpeed = 3f;
     [SerializeField, Range(0.8f, 1.0f)] float damping = 0.95f;
+
+    [Header("Hand Gesture")]
+    [SerializeField] private HandGestureDetector handGestureDetector;
+    [SerializeField] private float paGravity = 5.0f;
+    [SerializeField] private float guGravity = -5.0f;
     float currentGravity;
     Tensor<float> gTensor;
     Tensor<float> dTensor;
@@ -80,6 +85,15 @@ public class StarGravity : MonoBehaviour
 
     void Update()
     {
+        if (handGestureDetector != null)
+        {
+            switch (handGestureDetector.CurrentGesture)
+            {
+                case GestureType.Pa: gravityStrength = paGravity; break;
+                case GestureType.Gu: gravityStrength = guGravity; break;
+            }
+        }
+
         currentGravity = Mathf.Lerp(currentGravity, gravityStrength, gravityLerpSpeed * Time.deltaTime);
 
         gTensor?.Dispose();
