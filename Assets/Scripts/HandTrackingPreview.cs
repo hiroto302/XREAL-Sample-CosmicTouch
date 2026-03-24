@@ -98,8 +98,6 @@ public class HandTrackingPreview : MonoBehaviour
         var detModel = ModelLoader.Load(detectorModelAsset);
         var lmModel  = ModelLoader.Load(landmarkerModelAsset);
 
-        // ai.inference 2.4.0では出力順が変わったためshapeで判定
-        // scores: (1, 2016, 1), boxes: (1, 2016, 18)
         _detScoreOutput   = detModel.outputs[1].name;
         _detBoxOutput     = detModel.outputs[0].name;
         _lmOutput         = lmModel.outputs[0].name;
@@ -162,7 +160,7 @@ public class HandTrackingPreview : MonoBehaviour
     /// <summary>
     /// BlazeHandの検出とランドマーク推定を実行し、UIを更新する。
     /// </summary>
-    /// <param name="rt">入力となるRenderTexture</param>
+    /// <param name="rt">RGB変換済みのRenderTexture</param>
     void Detect(RenderTexture rt)
     {
         Graphics.Blit(rt, _rt192);
@@ -190,7 +188,7 @@ public class HandTrackingPreview : MonoBehaviour
         float[] boxesData  = rawBoxes.DownloadToArray();
 
         // ArgMax: 最大スコアのアンカーを選択
-        int   bestIdx   = -1;
+        int bestIdx = -1;
         float bestScore = float.NegativeInfinity;
         for (int i = 0; i < NumAnchors; i++)
         {
@@ -243,6 +241,7 @@ public class HandTrackingPreview : MonoBehaviour
         using var rawLm = rawLmGpu.ReadbackAndClone();
         float[] lmData = rawLm.DownloadToArray();
 
+        // ---- Step 3: Canvasに描画（座標変換 → UI更新）----
         // キーポイントをCanvas正規化座標(0〜1)に変換
         var points2D = new Vector2[NumKeypoints];
         for (int i = 0; i < NumKeypoints; i++)
