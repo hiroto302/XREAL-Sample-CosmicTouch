@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Rendering;
 using Unity.InferenceEngine;
 
 public class StarGravity : MonoBehaviour
@@ -6,8 +7,9 @@ public class StarGravity : MonoBehaviour
     Worker worker;
 
     public GameObject planet;
-    GameObject[] planets = new GameObject[N];
-    const int N = 2000;
+    Mesh planetMesh;
+    Material planetMaterial;
+    const int N = 100;
 
     const float t = 0.01f; // TimeStep
 
@@ -27,14 +29,29 @@ public class StarGravity : MonoBehaviour
     Tensor<float> v;
     Tensor<float> m;
 
+    // GPU instancing
+    Matrix4x4[] matrices;
+    MaterialPropertyBlock propertyBlock;
+    float[] massRatios;
+    ComputeBuffer positionBuffer;
+    int[] indexData;
+    ComputeBuffer indexBuffer;
+
     void Start()
     {
+        planetMesh = planet.GetComponent<MeshFilter>().sharedMesh;
+        planetMaterial = planet.GetComponent<Renderer>().sharedMaterial;
+
         float massMin = 0.0001f;
         float massMax = 100f;
 
         x = new Tensor<float>(new TensorShape(N, 3)); // positions
         v = new Tensor<float>(new TensorShape(N, 3)); // velocity (initially zero)
         m = new Tensor<float>(new TensorShape(N)); // mass
+
+        matrices = new Matrix4x4[N];
+        massRatios = new float[N];
+        indexData = new int[N];
 
         // Randomize positions and masses
         for (int i = 0; i < N; i++)
@@ -47,22 +64,28 @@ public class StarGravity : MonoBehaviour
             float mass = Mathf.Exp(UnityEngine.Random.Range(-1f, 1f));
             m[i] = mass;
 
-            float radius = Mathf.Pow(mass, 1.0f / 3.0f) / (4f * 3.14f); // m ~ 4Pir^3
+            float radius = Mathf.Pow(mass, 1.0f / 3.0f) / (4f * 3.14f);
+            float scale = Mathf.Clamp(0.1f * radius, 0.02f, 0.1f);
 
-            planets[i] = Instantiate(planet);
-            planets[i].transform.position = new Vector3(x[i, 0], x[i, 1], x[i, 2]);
-            planets[i].transform.localScale =  Vector3.one * Mathf.Clamp(0.1f*radius, 0.02f, 0.1f);
-            Renderer renderer = planets[i].GetComponent<Renderer>();
-            renderer.material.SetFloat("MassRatio", (mass - massMin)/(massMax - massMin));
+            matrices[i] = Matrix4x4.TRS(
+                new Vector3(x[i, 0], x[i, 1], x[i, 2]),
+                Quaternion.identity,
+                Vector3.one * scale
+            );
+            massRatios[i] = (mass - massMin) / (massMax - massMin);
+            indexData[i] = i;
         }
+
+        propertyBlock = new MaterialPropertyBlock();
+        propertyBlock.SetFloatArray("MassRatio", massRatios);
+
+        indexBuffer = new ComputeBuffer(N, sizeof(int));
+        indexBuffer.SetData(indexData);
 
         // Velocity steering model: no oscillation, smooth convergence
         // v_target = G * x / m  (target velocity proportional to distance)
         // v_new = lerp(v_target, v, D)  = (v - v_target) * D + v_target
         // x_new = x + v_new * t
-        // G<0: v_target points to origin, decays as particle approaches → no overshoot
-        // G>0: v_target points outward → exponential expansion
-        // G=0: v_target=0, damping stops motion
         var graph = new FunctionalGraph();
         var xdef = graph.AddInput<float>(x.shape);        // (N, 3)
         var mdef = graph.AddInput<float>(m.shape);         // (N)
@@ -108,12 +131,16 @@ public class StarGravity : MonoBehaviour
         v = (worker.PeekOutput("output_0") as Tensor<float>).ReadbackAndClone();
         x = (worker.PeekOutput("output_1") as Tensor<float>).ReadbackAndClone();
 
-        for (int i = 0; i < N; i++)
-        {
-            Renderer renderer = planets[i].GetComponent<Renderer>();
-            renderer.material.SetBuffer("Positions", ComputeTensorData.Pin(x, clearOnInit: false).buffer);
-            renderer.material.SetInteger("Index", i);
-        }
+        // Pin cloned tensor to get GPU buffer for shader
+        propertyBlock.SetBuffer("Positions", ComputeTensorData.Pin(x, clearOnInit: false).buffer);
+        propertyBlock.SetBuffer("IndexBuffer", indexBuffer);
+
+        // Draw all 1000 particles in a single batched call (max 1023 per call)
+        Graphics.DrawMeshInstanced(
+            planetMesh, 0, planetMaterial,
+            matrices, N, propertyBlock,
+            ShadowCastingMode.Off, false
+        );
     }
 
     void OnDestroy()
@@ -124,5 +151,6 @@ public class StarGravity : MonoBehaviour
         gTensor?.Dispose();
         dTensor?.Dispose();
         worker?.Dispose();
+        indexBuffer?.Release();
     }
 }

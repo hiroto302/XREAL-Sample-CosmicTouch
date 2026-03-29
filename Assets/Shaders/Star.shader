@@ -5,16 +5,17 @@ Shader "Unlit/Star"
         [HDR] _EmissionColor("Emission Color", Color) = (0,0,0)
         _MainTex("Texture", 2D) = "white" {}
     }
-        SubShader
+    SubShader
     {
         Tags {
-        "Queue" = "Transparent+110"
+            "Queue" = "Transparent+110"
         }
         Pass
         {
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
+            #pragma multi_compile_instancing
 
             #include "UnityCG.cginc"
 
@@ -22,29 +23,37 @@ Shader "Unlit/Star"
             {
                 float4 vertex : POSITION;
                 float2 uv : TEXCOORD0;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             struct v2f
             {
                 float4 vertex : SV_POSITION;
                 float2 uv : TEXCOORD0;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
-            float4 Color;
             StructuredBuffer<float> Positions;
-            int Index;
+            StructuredBuffer<int> IndexBuffer;
             float4 _EmissionColor;
-            float MassRatio;
 
             Texture2D<float4> _MainTex;
 
-            v2f vert(appdata v)
+            UNITY_INSTANCING_BUFFER_START(Props)
+            UNITY_DEFINE_INSTANCED_PROP(float, MassRatio)
+            UNITY_INSTANCING_BUFFER_END(Props)
+
+            v2f vert(appdata v, uint instanceID : SV_InstanceID)
             {
                 v2f o;
+                UNITY_SETUP_INSTANCE_ID(v);
+                UNITY_TRANSFER_INSTANCE_ID(v, o);
+
+                int idx = IndexBuffer[instanceID];
                 float4x4 viewMatrix = unity_ObjectToWorld;
-                viewMatrix[0][3] = Positions[3 * Index + 0];
-                viewMatrix[1][3] = Positions[3 * Index + 1];
-                viewMatrix[2][3] = Positions[3 * Index + 2];
+                viewMatrix[0][3] = Positions[3 * idx + 0];
+                viewMatrix[1][3] = Positions[3 * idx + 1];
+                viewMatrix[2][3] = Positions[3 * idx + 2];
 
                 float3 pos = v.vertex;
                 o.vertex = mul(UNITY_MATRIX_VP, mul(viewMatrix, float4(pos, 1.0)));
@@ -54,7 +63,9 @@ Shader "Unlit/Star"
 
             float4 frag(v2f i) : SV_Target
             {
-                float4 starRGB = _MainTex.Load(uint3(MassRatio*4096, 0, 0));
+                UNITY_SETUP_INSTANCE_ID(i);
+                float massRatio = UNITY_ACCESS_INSTANCED_PROP(Props, MassRatio);
+                float4 starRGB = _MainTex.Load(uint3(massRatio * 4096, 0, 0));
                 return float4(starRGB.rgb * _EmissionColor, 1);
             }
             ENDCG
